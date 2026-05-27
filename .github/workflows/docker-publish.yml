@@ -13,7 +13,8 @@ jobs:
       is_release: ${{ steps.check-release.outputs.is_release }}
       release_tag: ${{ steps.check-release.outputs.release_tag }}
       tags: ${{ steps.tags.outputs.tags }}
-      image: ${{ steps.tags.outputs.image }}
+      image_api: ${{ steps.tags.outputs.image_api }}
+      image_web: ${{ steps.tags.outputs.image_web }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,13 +57,14 @@ jobs:
             fi
           fi
 
-      - name: Compute tags
+      - name: Compute tags and image names
         id: tags
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}"
+          BASE="ghcr.io/${{ github.repository }}"
+          IMAGE_API="${BASE}-api"
+          IMAGE_WEB="${BASE}-web"
 
           if [[ "${{ steps.check-release.outputs.is_release }}" == "true" ]]; then
-            # This is a release: use semver tags + latest
             TAG="${{ steps.check-release.outputs.release_tag }}"
             VERSION="${TAG#v}"
             MAJOR=$(echo "$VERSION" | cut -d. -f1)
@@ -70,15 +72,16 @@ jobs:
             TAGS="${VERSION},${MAJOR}.${MINOR},${MAJOR},latest"
             echo "Building RELEASE with tags: $TAGS"
           else
-            # Regular commit: use SHA tags only (no latest)
             SHORT_SHA="${GITHUB_SHA:0:7}"
             TAGS="sha-${SHORT_SHA}"
             echo "Building COMMIT with tags: $TAGS"
           fi
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
-  # Build natively on each platform (faster, no QEMU emulation)
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "image_api=$IMAGE_API" >> $GITHUB_OUTPUT
+          echo "image_web=$IMAGE_WEB" >> $GITHUB_OUTPUT
+
+  # Build service images natively per platform (faster than QEMU)
   build:
     needs: prepare
     runs-on: ${{ matrix.runner }}
@@ -88,9 +91,21 @@ jobs:
     strategy:
       matrix:
         include:
-          - platform: linux/amd64
+          - service: api
+            dockerfile: Dockerfile.api
+            platform: linux/amd64
             runner: ubuntu-latest
-          - platform: linux/arm64
+          - service: api
+            dockerfile: Dockerfile.api
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - service: web
+            dockerfile: Dockerfile.web
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - service: web
+            dockerfile: Dockerfile.web
+            platform: linux/arm64
             runner: ubuntu-24.04-arm
 
     steps:
@@ -101,8 +116,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .turbo
-          key: ${{ runner.os }}-${{ runner.arch }}-turbo-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-turbo-${{ matrix.service }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-turbo-${{ matrix.service }}-
             ${{ runner.os }}-${{ runner.arch }}-turbo-
 
       - name: Free disk space
@@ -120,23 +136,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve image name
+        id: image
+        run: |
+          if [[ "${{ matrix.service }}" == "api" ]]; then
+            echo "image=${{ needs.prepare.outputs.image_api }}" >> $GITHUB_OUTPUT
+          else
+            echo "image=${{ needs.prepare.outputs.image_web }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ needs.prepare.outputs.image }}
+          images: ${{ steps.image.outputs.image }}
 
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: true
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.platform }}
           build-args: |
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             VERSION=${{ github.ref_name }}
@@ -144,33 +170,37 @@ jobs:
 
       - name: Export digest
         run: |
-          mkdir -p /tmp/digests
+          mkdir -p /tmp/digests/${{ matrix.service }}
           digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          touch "/tmp/digests/${{ matrix.service }}/${digest#sha256:}"
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ strategy.job-index }}
-          path: /tmp/digests/*
+          name: digests-${{ matrix.service }}-${{ strategy.job-index }}
+          path: /tmp/digests/${{ matrix.service }}/*
           if-no-files-found: error
           retention-days: 1
 
-  # Merge platform-specific images into multi-arch manifest
+  # Merge per-platform images into multi-arch manifests (one manifest per service)
   merge:
-    needs: [ prepare, build ]
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
+    strategy:
+      matrix:
+        service: [api, web]
+
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.service }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -183,35 +213,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve image name
+        id: image
+        run: |
+          if [[ "${{ matrix.service }}" == "api" ]]; then
+            echo "image=${{ needs.prepare.outputs.image_api }}" >> $GITHUB_OUTPUT
+          else
+            echo "image=${{ needs.prepare.outputs.image_web }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          IMAGE="${{ needs.prepare.outputs.image }}"
+          IMAGE="${{ steps.image.outputs.image }}"
           TAGS="${{ needs.prepare.outputs.tags }}"
 
-          # Convert comma-separated tags to array and create docker tag arguments
           TAG_ARGS=""
           IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
           for tag in "${TAG_ARRAY[@]}"; do
             TAG_ARGS="$TAG_ARGS -t ${IMAGE}:${tag}"
           done
 
-          # Create and push manifest using all digests
-          docker buildx imagetools create $TAG_ARGS \
-            $(printf '${{ needs.prepare.outputs.image }}@sha256:%s ' *)
+          DIGEST_ARGS=""
+          for digest in *; do
+            DIGEST_ARGS="$DIGEST_ARGS ${IMAGE}@sha256:${digest}"
+          done
+
+          docker buildx imagetools create $TAG_ARGS $DIGEST_ARGS
 
       - name: Inspect image
         run: |
-          IMAGE="${{ needs.prepare.outputs.image }}"
+          IMAGE="${{ steps.image.outputs.image }}"
           TAGS="${{ needs.prepare.outputs.tags }}"
           FIRST_TAG=$(echo "$TAGS" | cut -d',' -f1)
           docker buildx imagetools inspect ${IMAGE}:${FIRST_TAG}
 
       - name: Summary
         run: |
-          IMAGE="${{ needs.prepare.outputs.image }}"
+          IMAGE="${{ steps.image.outputs.image }}"
           TAGS="${{ needs.prepare.outputs.tags }}"
-          echo "## Docker Image Published 🚀" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Docker Image Published (${{ matrix.service }}) 🚀" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.prepare.outputs.is_release }}" == "true" ]]; then
             echo "**Type:** Release (${{ needs.prepare.outputs.release_tag }})" >> $GITHUB_STEP_SUMMARY
