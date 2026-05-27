@@ -74,7 +74,7 @@ jobs:
             echo "Building RELEASE with tags: $TAGS"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
-            TAGS="sha-${SHORT_SHA}"
+            TAGS="sha-${SHORT_SHA},latest"
             echo "Building COMMIT with tags: $TAGS"
           fi
 
@@ -96,18 +96,10 @@ jobs:
             dockerfile: Dockerfile.api
             platform: linux/amd64
             runner: ubuntu-latest
-          - service: api
-            dockerfile: Dockerfile.api
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
           - service: web
             dockerfile: Dockerfile.web
             platform: linux/amd64
             runner: ubuntu-latest
-          - service: web
-            dockerfile: Dockerfile.web
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout

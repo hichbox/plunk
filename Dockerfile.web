@@ -17,13 +17,26 @@ COPY .yarn/releases ./.yarn/releases
 COPY package.json yarn.lock ./
 
 # Workspace manifests required for dependency resolution
+COPY apps/api/package.json ./apps/api/
+COPY apps/smtp/package.json ./apps/smtp/
 COPY apps/web/package.json ./apps/web/
+COPY apps/landing/package.json ./apps/landing/
+COPY apps/wiki/package.json ./apps/wiki/
+COPY packages/db/package.json ./packages/db/
 COPY packages/ui/package.json ./packages/ui/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/types/package.json ./packages/types/
-COPY packages/db/package.json ./packages/db/
+COPY packages/email/package.json ./packages/email/
 COPY packages/typescript-config/package.json ./packages/typescript-config/
 COPY packages/eslint-config/package.json ./packages/eslint-config/
+
+# Wiki files needed during install (fumadocs-mdx postinstall)
+COPY apps/wiki/content ./apps/wiki/content
+COPY apps/wiki/lib ./apps/wiki/lib
+COPY apps/wiki/source.config.ts ./apps/wiki/source.config.ts
+COPY apps/wiki/mdx-components.tsx ./apps/wiki/mdx-components.tsx
+COPY apps/wiki/next.config.mjs ./apps/wiki/next.config.mjs
+COPY apps/wiki/tsconfig.json ./apps/wiki/tsconfig.json
 
 RUN --mount=type=cache,target=/root/.yarn/berry/cache,sharing=locked \
     --mount=type=cache,target=/root/.cache/yarn,sharing=locked \
