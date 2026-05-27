@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - next
+  workflow_dispatch:
 
 jobs:
   # Prepare metadata and tags for all builds
