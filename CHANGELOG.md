@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/hichbox/plunk/compare/v0.11.0...v0.12.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** split Plunk into api/web images and add Coolify compose ([2f9470c](https://github.com/hichbox/plunk/commit/2f9470c4e089077bc7b8c201da4f446430df3a23))
+
 ## [0.11.0](https://github.com/useplunk/plunk/compare/v0.10.0...v0.11.0) (2026-05-13)
 
 
